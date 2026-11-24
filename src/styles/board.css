@@ -1,0 +1,1251 @@
+/* 보드 화면 (DESIGN §4.2·§7·§16). 토큰 이름만 쓴다. 그림자·글로우는 정적, 움직임은 transform·opacity 만. */
+.board-root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--background);
+  font-family: var(--font-body);
+  color: var(--foreground);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.board-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 먼 하늘: 살짝 흐리고 밝게 — 배경 그림 속 먼 섬이 판 칸과 겹쳐 보이지 않게(정적) */
+  filter: blur(1.5px) brightness(1.06) saturate(0.9);
+}
+.board-bg--fallback {
+  background: linear-gradient(var(--background-sky-top), var(--background-sky-mid) 55%, var(--background-sky-bottom));
+}
+.board-stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--stage-w);
+  height: var(--stage-h);
+  transform-origin: 50% 50%;
+}
+
+/* ── 레이어 2개(§16.6): world 는 줌 대상(T-E), hud 는 고정 ── */
+.board-cam,
+.board-world,
+.board-hud {
+  position: absolute;
+  inset: 0;
+}
+.board-cam {
+  z-index: 1;
+}
+/* 줌 동안만 스테이지 밖을 자른다(1배에선 칸 그림 투명 여백이 스테이지 밖 1~2px 로 나가도 됨) */
+.board-cam.is-zoom {
+  overflow: hidden;
+}
+.board-world {
+  transform-origin: 0 0;
+}
+.board-hud {
+  z-index: 2;
+  pointer-events: none;
+}
+.board-hud > * {
+  pointer-events: auto;
+}
+.board-filters {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+/* ── 광장(세계 지도 섬) + 대륙 마스크 ── */
+.plaza {
+  position: absolute;
+  z-index: 1;
+}
+.plaza-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 10px 14px color-mix(in srgb, var(--foreground) 28%, transparent));
+}
+.plaza-fallback {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-card);
+  background: linear-gradient(var(--tile-top) 0 82%, var(--tile-side) 82% 100%);
+}
+.plaza-mask {
+  position: absolute;
+  z-index: 2;
+  background: var(--paint);
+  -webkit-mask: var(--mask) center / 100% 100% no-repeat;
+  mask: var(--mask) center / 100% 100% no-repeat;
+  mix-blend-mode: color; /* 자리색으로 칠하되 지도 명암·나무 결은 그대로 */
+  opacity: 0;
+  transition: opacity 200ms var(--ease-standard);
+  pointer-events: none;
+}
+.plaza-mask.is-on {
+  opacity: 0.85;
+}
+.plaza-mask.is-instant {
+  transition: none;
+}
+
+/* ── 칸 30 (TILE-<n>d, 이름표는 그림 속) ── */
+.tile {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+}
+.tile-img {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 6px 6px color-mix(in srgb, var(--foreground) 22%, transparent));
+}
+.tile.is-current .tile-img {
+  filter: drop-shadow(0 0 3px var(--tile-current)) drop-shadow(0 0 8px var(--tile-current)) drop-shadow(0 6px 6px color-mix(in srgb, var(--foreground) 22%, transparent));
+}
+.tile.is-glow .tile-img {
+  filter: drop-shadow(0 0 2px var(--gold-shine)) drop-shadow(0 0 10px var(--gold-rim)) drop-shadow(0 0 4px var(--gold-shine));
+}
+/* 지금 칸: 공터에 깔린 금빛 고리(캐릭터 발 아래, 정적) */
+.tile-current {
+  position: absolute;
+  z-index: 1;
+  width: 46px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--tile-current);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--gold-shine) 55%, transparent), color-mix(in srgb, var(--gold-shine) 8%, transparent));
+  box-shadow: 0 0 10px var(--tile-current);
+}
+/* 그림 미로드 폴백: 땅덩이 모양 + 띠 + 크림 이름표(코드 글자는 이때만) */
+.tile-fallback {
+  position: absolute;
+  inset: 0 4% 3%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 14%;
+  border-radius: 22% 22% 40% 40%;
+  background: linear-gradient(var(--tile-top-light), var(--tile-top) 58%, var(--band, var(--tile-side)) 58% 68%, var(--tile-side) 68% 100%);
+}
+.tile-fallback[data-band='asia'] { --band: var(--continent-asia); }
+.tile-fallback[data-band='europe'] { --band: var(--continent-europe); }
+.tile-fallback[data-band='africa'] { --band: var(--continent-africa); }
+.tile-fallback[data-band='namerica'] { --band: var(--continent-north-america); }
+.tile-fallback[data-band='samerica'] { --band: var(--continent-south-america); }
+.tile-fallback-plate {
+  max-width: 76%;
+  padding: 1px var(--space-2);
+  border: 2px solid var(--tile-side);
+  border-radius: var(--radius-sm);
+  background: var(--tile-label);
+  color: var(--tile-label-foreground);
+  font-family: var(--font-display);
+  font-size: var(--text-tile);
+  line-height: 1.3;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── 칸 사이 밧줄 다리(중립 나무) ── */
+.board-bridges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 4;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 1.5px color-mix(in srgb, var(--foreground) 35%, transparent));
+}
+.br-plank {
+  fill: var(--wood-light);
+  stroke: var(--wood-rope);
+  stroke-width: 0.8;
+}
+.br-rope {
+  fill: none;
+  stroke: var(--wood-rope);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+}
+.br-post {
+  fill: var(--tile-side-dark);
+}
+
+/* ── 대륙 이정표: 그림(판 + 기둥) 위 대륙색 면 + 흰 글자 ── */
+.sign {
+  position: absolute;
+  pointer-events: none;
+}
+.sign-img {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.sign-shadow {
+  position: absolute;
+  left: 22%;
+  bottom: 1%;
+  width: 56%;
+  height: 12%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--shadow-contact), transparent);
+}
+.sign-fallback {
+  position: absolute;
+  left: 6%;
+  top: 19%;
+  width: 88%;
+  height: 37%;
+  border-radius: var(--radius-sm);
+  background: var(--tile-side);
+}
+.sign-face {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  /* 답 버튼 레시피: 위 40% 광택 + 아래 2px 어두운 테 */
+  background:
+    linear-gradient(color-mix(in srgb, var(--background-cloud) 34%, transparent), color-mix(in srgb, var(--background-cloud) 8%, transparent) 40%, transparent 40%),
+    var(--face);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--foreground) 35%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 25%, transparent);
+}
+/* 볼트 2(그림의 볼트를 면이 덮으므로 다시 박는다) */
+.sign-face::before,
+.sign-face::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, var(--background-cloud), var(--island) 70%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--foreground) 45%, transparent);
+}
+.sign-face::before { left: 3px; }
+.sign-face::after { right: 3px; }
+.sign-text {
+  color: var(--background-cloud);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: var(--weight-regular);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  /* 흰 글자 + 남색 외곽(노랑·초록 면에서도 읽힌다) */
+  text-shadow:
+    -1px -1px 0 var(--foreground), 1px -1px 0 var(--foreground), -1px 1px 0 var(--foreground), 1px 1px 0 var(--foreground),
+    0 2px 0 var(--foreground);
+}
+
+/* ── 땅 주인·건물 C2(§17.2): 뒤 기둥 + 삼각기 7 · 바깥 세로 깃발(길이 = 단계) · 앞오른쪽 발코니 미니어처 ── */
+/* 미니어처·깃발은 칸 그림 경관과 같은 화풍이라 흰 스티커 테(정적 drop-shadow 4방향)로 떼어 보인다(U5 피드백 4·5) */
+.board-world { --sticker-rim: var(--accent-foreground); }
+.own {
+  position: absolute;
+  pointer-events: none;
+}
+.own > *, .own-flagset > * { position: absolute; }
+.own-flagset { inset: 0; transform-origin: 90% 0; animation: tile-pop 420ms var(--ease-standard) both; }
+.own-rig { left: 0; top: 0; overflow: visible; }
+.own-post {
+  stroke: #9A7148;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.own-post--edge { stroke: var(--foreground); stroke-width: 4.6; }
+.own-knob { fill: var(--gold-rim); stroke: var(--foreground); stroke-width: 0.9; }
+.own-rope {
+  fill: none;
+  stroke: #7A5230;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.own-rope--edge { stroke: var(--foreground); stroke-width: 2.8; }
+/* 삼각기·세로 깃발: 남색 외곽선(4방향 정적 drop-shadow)으로 하늘·풍경에서 떼어 보인다 */
+.own-pennants { display: block; filter: drop-shadow(0.7px 0 0 var(--foreground)) drop-shadow(-0.7px 0 0 var(--foreground)) drop-shadow(0 0.8px 0 var(--foreground)) saturate(1.15); } /* 요소 1개라 필터도 칸당 1번 */
+.own-pennant--css { clip-path: polygon(0 0, 100% 0, 50% 100%); background: var(--seat); }
+/* 세로 깃발: 천 폭 16 로 맞춘 그림을 clip-path 로 단계 길이만큼(V 꼬리) — 바깥 상자가 자르고 안쪽 그림에 외곽선 */
+.own-flag { display: block; }
+.own-flag-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  filter: drop-shadow(0.9px 0 0 var(--foreground)) drop-shadow(-0.9px 0 0 var(--foreground)) drop-shadow(0 1px 0 var(--foreground)) saturate(1.15);
+}
+.own-flag--css { background: linear-gradient(90deg, var(--seat) 0 36%, #FFF 36% 64%, var(--seat) 64%); clip-path: inset(4% 36% 0 36%); }
+.own-star { display: block; filter: drop-shadow(0 0 2px var(--gold-shine)); }
+.own-star--css { background: var(--gold-rim); clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
+.own-bld { transform-origin: 50% 100%; animation: tile-pop 420ms var(--ease-standard) both; }
+.own-bld > * { position: absolute; display: block; }
+.own-balcony { object-fit: cover; filter: drop-shadow(0 2px 1.5px color-mix(in srgb, var(--foreground) 50%, transparent)); }
+.own-balcony--css { border-radius: 0 0 50% 50%; border: 2px solid var(--seat); background: #8A6A4C; box-sizing: border-box; }
+.own-mini {
+  object-fit: contain;
+  object-position: 50% 100%;
+  filter:
+    drop-shadow(1px 0 0 var(--sticker-rim)) drop-shadow(-1px 0 0 var(--sticker-rim))
+    drop-shadow(0 1px 0 var(--sticker-rim)) drop-shadow(0 -1px 0 var(--sticker-rim))
+    drop-shadow(0 1.5px 1px color-mix(in srgb, var(--foreground) 55%, transparent));
+}
+.own-mini--css { border-radius: 3px 3px 0 0; background: var(--landmark); }
+@keyframes tile-pop {
+  0% { transform: scale(0); }
+  60% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+
+/* ── 남은 시간 간판: 광장 뒤 가운데 매달린 간판(hang-sign.css, §16.4·§15.5) — 모래시계 16 + mm:ss 22px ── */
+.board-timer {
+  font-size: 22px;
+}
+.board-timer-ico {
+  flex: none;
+  filter: drop-shadow(1px 1px 0 var(--tile-side-dark));
+}
+.board-timer b {
+  font-weight: var(--weight-regular);
+}
+/* 막판: 간판 면이 붉게(warn) + 아래 "통행료 ×1.5" 칩 */
+.board-timer-sign.is-last .hang-plate {
+  border: 3px solid var(--tile-side-dark);
+  border-image: none;
+  border-radius: 8px;
+  background: var(--timer-warn);
+  color: #FFF;
+}
+.board-timer-chip {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 2px var(--space-2);
+  border: 2px solid var(--timer-warn);
+  border-radius: var(--radius-full);
+  background: var(--popover);
+  color: var(--timer-warn);
+  font-family: var(--font-display);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* ── 플레이어 패널(U5 §16.9.2): 초상 없는 200×48 금테 알약, 자리색 띠 30% + 크림 70% ── */
+.panel {
+  position: absolute;
+  box-sizing: border-box;
+  width: var(--panel-w);
+  height: var(--panel-h);
+  transform: translate(-50%, -50%);
+}
+/* at 없이 쓰일 때(옛 귀퉁이 자리) */
+.panel--tl:not([style*='left']) { left: 140px; top: 48px; }
+.panel--tr:not([style*='left']) { left: 1226px; top: 48px; }
+.panel--bl:not([style*='left']) { left: 140px; top: 720px; }
+.panel--br:not([style*='left']) { left: 1226px; top: 720px; }
+.panel-pill {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 3px solid var(--gold-rim);
+  border-radius: var(--radius-full);
+  /* 왼쪽 자리색 띠 30% + 오른쪽 크림 70%, 위 절반 옅은 광택(§15.5 · §16.9.2) */
+  background:
+    linear-gradient(color-mix(in srgb, var(--background-cloud) 40%, transparent), color-mix(in srgb, var(--background-cloud) 6%, transparent) 48%, transparent 48%),
+    linear-gradient(90deg, var(--seat) 0 30%, var(--popover) 30% 100%);
+  box-shadow:
+    0 0 0 2px var(--foreground),
+    inset 0 -3px 0 color-mix(in srgb, var(--foreground) 18%, transparent),
+    0 4px 0 color-mix(in srgb, var(--foreground) 30%, transparent);
+}
+.panel-band {
+  position: relative;
+  flex: 0 0 30%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 4px;
+  box-sizing: border-box;
+}
+.panel.is-turn .panel-pill {
+  box-shadow: 0 0 0 2px var(--foreground), var(--shadow-glow-gold);
+}
+.panel.is-out {
+  opacity: 0.6;
+  filter: grayscale(0.7);
+}
+.panel-bot,
+.panel-me {
+  position: absolute;
+  padding: 0 var(--space-1);
+  border: 2px solid var(--foreground);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-display);
+  line-height: 1.3;
+}
+/* 봇 캡션 11px: 알약 왼쪽 위 테에 걸친 작은 표("나" 표와 거울 자리 — 초상이 없어 이름 띠 위에 붙인다) */
+.panel-bot {
+  left: 4px;
+  top: -9px;
+  padding: 0 3px;
+  border-width: 1.5px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  font-size: 11px;
+  line-height: 1.15;
+}
+.panel-me {
+  right: -8px;
+  top: -9px;
+  background: var(--gold-rim);
+  color: var(--foreground);
+  font-size: var(--text-tile);
+}
+/* 닉네임 15px bold, 자리색 면 위 남색(seat.n.on). 별명 = 형용사 + 동물(각 3자 이하) → 두 줄 */
+.panel-name {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  color: var(--seat-on, var(--foreground));
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: var(--weight-bold);
+  line-height: 1.02;
+  white-space: nowrap;
+}
+.panel-name-w {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-coin {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding-right: 6px;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.panel-coin b {
+  font-weight: var(--weight-regular);
+}
+.panel-coin-img {
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 1px 0 var(--foreground));
+}
+.panel-coin-fallback {
+  display: inline-block;
+  border-radius: 50%;
+  background: var(--coin);
+}
+.panel {
+  transition: opacity var(--duration-fast) linear;
+}
+/* 줌 중 이동자가 패널 뒤에 들어옴: 옅게만(자리·크기 그대로) */
+.panel.is-veiled {
+  opacity: 0.28;
+}
+/* 줌(in·follow·hold) 동안 광장 위에 떠 있는 HUD(패널·남은 시간·규칙·멈춤)를 걷는다(U5 사용자 피드백 3).
+   HUD 는 화면 레이어라 줌에 안 커지고 제자리에 남는데, 그대로 두면 확대된 판 위에 떠서 줌을 따라다니는 것처럼 보이고 장면을 가린다.
+   주사위와 같은 150ms 페이드, 줌이 풀리기 시작(out)하면 돌아온다. 자리·크기는 그대로 */
+.board-hud.is-cam .panel,
+.board-hud.is-cam .board-timer-sign,
+.game:has(.board-hud.is-cam) .gm-sign:not(.is-chain) {
+  opacity: 0;
+  pointer-events: none;
+}
+.board-timer-sign,
+.gm-sign {
+  transition: opacity var(--duration-fast) linear;
+}
+/* U16(DESIGN §21.1): 큰 카드 동안 판 시계 간판은 사슬 시계 칩에 자리를 넘긴다 — visibility 로 접근성 트리에서도 빠져 role=timer 가 하나만 남는다 */
+.game.is-folded .board-timer-sign {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--chain-fade) linear, visibility 0s linear var(--chain-fade);
+}
+
+/* ── 주사위 B: 나무 컵 + 금테 쟁반(§17.1). HUD 상자 (583,282) 200×166 — 자리는 dice-show.ts CUP 에서 ── */
+.dice-wrap {
+  position: absolute;
+  transition: opacity var(--duration-fast) linear;
+}
+/* 줌 동안 숨김(§16.6): 화면 정중앙이라 줌된 캐릭터를 가린다 */
+.dice-wrap.is-cam {
+  opacity: 0;
+  pointer-events: none;
+}
+.dice {
+  position: relative;
+  transition: opacity var(--duration-fast) linear;
+}
+.dice > * { position: absolute; }
+/* 남의 차례·관전 대기: 컵 정지 · 옅게. §17.1.2 는 opacity .6 이지만 지도가 컵을 비쳐 유령처럼 보여(U8-impl 실측 캡처) 채도·밝기를 낮추고 opacity 는 .85 */
+.dice.is-dim { opacity: 0.85; filter: saturate(0.55) brightness(0.92); }
+.dice-tray-shadow {
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--foreground) 45%, transparent), transparent);
+  opacity: 0.55;
+}
+.dice-tray {
+  left: 0;
+  top: 70px;
+  width: 200px;
+  height: 96px;
+  object-fit: fill;
+  pointer-events: none;
+}
+.dice-tray--css {
+  border: 6px solid var(--gold-rim);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 50% 40%, #B07A45, #7A4A22);
+  box-shadow: 0 0 0 2px var(--foreground);
+  box-sizing: border-box;
+}
+/* 게이지 = 쟁반 테 위 호(12px, 노랑→주황). 누르는 동안 0→100→0, 뗀 값에서 멈춤, 합 팝 때 300ms 페이드 */
+.dice-gauge {
+  opacity: 0;
+  overflow: visible;
+  pointer-events: none;
+  transition: opacity 300ms linear;
+}
+.dice-gauge.is-on { opacity: 1; transition: none; }
+.dice-gauge.is-on.is-fade { opacity: 0; transition: opacity 300ms linear; }
+.dice-gauge-arc, .dice-gauge-edge {
+  fill: none;
+  stroke-dasharray: 100 100;
+  stroke-dashoffset: 100;
+}
+/* 남색 테두리 띠(금 테 위에서도 게이지가 읽히게) 위에 노랑→주황 호 */
+.dice-gauge-edge {
+  stroke: var(--foreground);
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+.dice-gauge-arc {
+  stroke: url(#dice-gauge-grad);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 100 100;
+  stroke-dashoffset: 100;
+}
+/* 컵: 바닥 중앙 앵커(서 있음·기울임), 쏟음은 입구 끝 자리. 셋을 겹쳐 opacity 로 바꾼다(60ms 크로스페이드) */
+.dice-cup-box { width: 0; height: 0; }
+.dice-cup {
+  position: absolute;
+  display: block;
+  object-fit: contain;
+  object-position: 50% 100%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 60ms linear;
+  filter: drop-shadow(0 3px 2px color-mix(in srgb, var(--foreground) 35%, transparent));
+}
+.dice-cup--stand { left: -55px; bottom: 0; width: 110px; height: 110px; transform-origin: 50% 100%; }
+.dice-cup--tilt { left: -60px; bottom: 0; width: 120px; height: 120px; }
+.dice-pour-box { pointer-events: none; }
+.dice-cup--pour { inset: 0; width: 100%; height: 100%; }
+.dice[data-phase='idle'] .dice-cup--stand,
+.dice[data-phase='press'] .dice-cup--stand,
+.dice[data-phase='shake'] .dice-cup--stand { opacity: 1; }
+.dice[data-phase='tilt'] .dice-cup--tilt { opacity: 1; }
+.dice[data-phase='pour'] .dice-cup--pour,
+.dice[data-phase='stop'] .dice-cup--pour,
+.dice[data-phase='pop'] .dice-cup--pour { opacity: 1; }
+/* 끝(이동 시작): pour → stand 200ms */
+.dice[data-phase='done'] .dice-cup--stand { opacity: 1; transition-duration: 200ms; }
+.dice[data-phase='done'] .dice-cup--pour { transition-duration: 200ms; }
+.dice-cup--css {
+  width: 80px;
+  height: 104px;
+  left: -40px;
+  border-radius: 10px 10px 18px 18px;
+  clip-path: polygon(10% 0, 90% 0, 100% 100%, 0 100%);
+  background: linear-gradient(90deg, #6B3E1C, #A8672F 45%, #6B3E1C);
+}
+/* 대기 — 내 턴: 달그락(±2° + 1px, 1.6s) · 누름·봇: 흔들림(±8°, 80ms 왕복) — transform 만 */
+.dice.is-ready[data-phase='idle'] .dice-cup--stand { animation: cup-rattle 1.6s var(--ease-standard) infinite; }
+.dice[data-phase='press'] .dice-cup--stand,
+.dice[data-phase='shake'] .dice-cup--stand { animation: cup-shake 80ms linear infinite alternate; }
+@keyframes cup-rattle {
+  0%, 100% { transform: rotate(0) translateY(0); }
+  20% { transform: rotate(-2deg) translateY(1px); }
+  40% { transform: rotate(2deg) translateY(0); }
+  60% { transform: rotate(-1.5deg) translateY(1px); }
+  80% { transform: rotate(0) translateY(0); }
+}
+@keyframes cup-shake {
+  from { transform: rotate(-8deg); }
+  to { transform: rotate(8deg); }
+}
+/* 주사위 2(60): 면 6장 겹침, data-face 만 보임. 쟁반 위에 나와 있을 때(data-out)만 */
+.dice-die {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms linear;
+}
+.dice-die[data-out] { opacity: 1; transition: none; }
+.dice[data-phase='done'] .dice-die[data-out] { opacity: 0; transition: opacity 150ms linear; }
+.dice-die-shadow {
+  position: absolute;
+  left: 10%;
+  bottom: -4px;
+  width: 80%;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--foreground) 60%, transparent), transparent);
+  opacity: 0.35;
+}
+.dice-face {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  filter: drop-shadow(0 2px 1px color-mix(in srgb, var(--foreground) 30%, transparent));
+}
+.dice-die[data-face='1'] .dice-face--1, .dice-die:not([data-face]) .dice-face--1,
+.dice-die[data-face='2'] .dice-face--2, .dice-die[data-face='3'] .dice-face--3,
+.dice-die[data-face='4'] .dice-face--4, .dice-die[data-face='5'] .dice-face--5,
+.dice-die[data-face='6'] .dice-face--6 { opacity: 1; }
+.dice-die.is-land .dice-face { animation: die-land 60ms ease-out; }
+@keyframes die-land {
+  from { transform: scale(1.15); }
+  to { transform: scale(1); }
+}
+/* 그림 없을 때: 흰 둥근 네모 + 남색 점 */
+.dice-face--css {
+  box-sizing: border-box;
+  display: grid;
+  grid-template: repeat(3, 1fr) / repeat(3, 1fr);
+  padding: 8px;
+  border: 2px solid var(--foreground);
+  border-radius: 12px;
+  background: var(--background-cloud);
+}
+.dice-face--css i { width: 9px; height: 9px; margin: auto; border-radius: 50%; background: var(--foreground); }
+.dice-face--css[data-n='1'] i { grid-area: 2 / 2; }
+.dice-face--css[data-n='2'] i:nth-child(1), .dice-face--css[data-n='3'] i:nth-child(1) { grid-area: 1 / 1; }
+.dice-face--css[data-n='2'] i:nth-child(2), .dice-face--css[data-n='3'] i:nth-child(3) { grid-area: 3 / 3; }
+.dice-face--css[data-n='3'] i:nth-child(2), .dice-face--css[data-n='5'] i:nth-child(5) { grid-area: 2 / 2; }
+.dice-face--css[data-n='4'] i:nth-child(1), .dice-face--css[data-n='5'] i:nth-child(1), .dice-face--css[data-n='6'] i:nth-child(1) { grid-area: 1 / 1; }
+.dice-face--css[data-n='4'] i:nth-child(2), .dice-face--css[data-n='5'] i:nth-child(2), .dice-face--css[data-n='6'] i:nth-child(2) { grid-area: 1 / 3; }
+.dice-face--css[data-n='4'] i:nth-child(3), .dice-face--css[data-n='5'] i:nth-child(3), .dice-face--css[data-n='6'] i:nth-child(3) { grid-area: 3 / 1; }
+.dice-face--css[data-n='4'] i:nth-child(4), .dice-face--css[data-n='5'] i:nth-child(4), .dice-face--css[data-n='6'] i:nth-child(4) { grid-area: 3 / 3; }
+.dice-face--css[data-n='6'] i:nth-child(5) { grid-area: 2 / 1; }
+.dice-face--css[data-n='6'] i:nth-child(6) { grid-area: 2 / 3; }
+/* 멈춤 반짝 별 3 · 더블 금 반짝 6: CSS 정적 별, opacity 만 */
+.dice-spark i, .dice-double-spark i {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--gold-shine);
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+  opacity: 0;
+  animation: dice-spark 300ms linear both;
+}
+.dice-spark i:nth-child(1) { left: -6px; top: -4px; }
+.dice-spark i:nth-child(2) { right: -8px; top: 6px; animation-delay: 60ms; }
+.dice-spark i:nth-child(3) { left: 40%; top: -12px; animation-delay: 120ms; }
+@keyframes dice-spark {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+/* 합 숫자: Jua 64 금빛 + 남색 외곽선 3 + 흰 그림자, 뒤 버스트 128. 숫자 0→1.2→1(back.out) 300ms · 버스트 0→1 200ms */
+.dice-sum {
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.dice-burst {
+  position: absolute;
+  left: -64px;
+  top: -64px;
+  width: 128px;
+  height: 128px;
+  animation: dice-burst 200ms var(--ease-standard) both;
+}
+.dice-sum-n {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -54%);
+  color: var(--gold-shine);
+  font-family: var(--font-display);
+  font-size: 64px;
+  font-weight: var(--weight-regular);
+  line-height: 1;
+  /* 남색 외곽선 3(8방향 그림자 — 글꼴·브라우저와 무관) + 아래 흰 그림자 */
+  text-shadow:
+    -3px 0 0 var(--foreground), 3px 0 0 var(--foreground), 0 -3px 0 var(--foreground), 0 3px 0 var(--foreground),
+    -2px -2px 0 var(--foreground), 2px -2px 0 var(--foreground), -2px 2px 0 var(--foreground), 2px 2px 0 var(--foreground),
+    0 6px 0 var(--background-cloud), 0 7px 6px color-mix(in srgb, var(--foreground) 45%, transparent);
+  animation: dice-sum-pop 300ms var(--ease-bounce) both;
+}
+@keyframes dice-burst {
+  from { transform: scale(0); }
+  to { transform: scale(1); }
+}
+@keyframes dice-sum-pop {
+  0% { transform: translate(-50%, -54%) scale(0); }
+  70% { transform: translate(-50%, -54%) scale(1.2); }
+  100% { transform: translate(-50%, -54%) scale(1); }
+}
+.dice[data-phase='done'] .dice-sum,
+.dice[data-phase='done'] .dice-double { opacity: 0; }
+.dice.is-reduced[data-phase='done'] .dice-sum { opacity: 1; }
+/* 같은 눈 칩: 크림 알약 72×24 + 금테 2, "더블!" 16 bold 남색 — 합 팝 +170 에 scale 0→1 200ms */
+.dice-double {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  border: 2px solid var(--gold-rim);
+  border-radius: var(--radius-full);
+  background: var(--popover);
+  box-shadow: 0 0 0 1.5px var(--foreground), 0 3px 0 color-mix(in srgb, var(--foreground) 30%, transparent);
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  pointer-events: none;
+  animation: dice-burst 200ms var(--ease-bounce) 170ms both;
+}
+.dice-double-spark i:nth-child(1) { left: -10px; top: -8px; animation-delay: 200ms; }
+.dice-double-spark i:nth-child(2) { right: -10px; top: -8px; animation-delay: 260ms; }
+.dice-double-spark i:nth-child(3) { left: -14px; bottom: -6px; animation-delay: 320ms; }
+.dice-double-spark i:nth-child(4) { right: -14px; bottom: -6px; animation-delay: 380ms; }
+.dice-double-spark i:nth-child(5) { left: 30%; top: -14px; animation-delay: 440ms; }
+.dice-double-spark i:nth-child(6) { right: 30%; bottom: -14px; animation-delay: 500ms; }
+/* 누르는 자리 = HUD 상자 전체(투명 버튼) */
+.dice-btn {
+  inset: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 40% 40% 50% 50%;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+.dice-btn:disabled { cursor: default; }
+.dice-btn:focus-visible {
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
+}
+/* 이동 중 말 머리 위 합 칩(판 레이어): 크림 알약 + Jua 28 금 + 남색 외곽선, 착지 +300 에 사라짐 */
+.hop-chip {
+  position: absolute;
+  z-index: 9000;
+  padding: 0 10px;
+  transform: translate(-50%, -100%);
+  border: 2px solid var(--gold-rim);
+  border-radius: var(--radius-full);
+  background: var(--popover);
+  box-shadow: 0 0 0 1.5px var(--foreground);
+  color: var(--gold-shine);
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.15;
+  text-shadow:
+    -2px 0 0 var(--foreground), 2px 0 0 var(--foreground), 0 -2px 0 var(--foreground), 0 2px 0 var(--foreground),
+    -1.5px -1.5px 0 var(--foreground), 1.5px -1.5px 0 var(--foreground), -1.5px 1.5px 0 var(--foreground), 1.5px 1.5px 0 var(--foreground);
+  pointer-events: none;
+  transition: left 320ms linear, top 320ms linear;
+}
+
+/* ── 독점 띠 + 색종이(§16.5) ── */
+.mono {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.mono-confetti {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.mono-band {
+  /* 띠 자리(가로 전체)는 slide-in 만 맡고, 그림은 가운데 금 리본 */
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 248px;
+  display: grid;
+  place-items: center;
+  animation: mono-in 300ms var(--ease-standard) both;
+}
+.mono-ribbon {
+  --ribbon-tail-top: 30px;
+  --ribbon-tail-w: 150px;
+  --ribbon-tail-h: 64px;
+  width: 820px;
+  height: 104px;
+}
+.mono-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 640px;
+  padding: 12px 36px 14px 24px;
+  font-size: 34px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+.mono-title b {
+  font-weight: var(--weight-regular);
+}
+.mono-who {
+  color: var(--seat);
+  -webkit-text-stroke: 1.5px var(--foreground);
+  paint-order: stroke fill;
+}
+.mono-flag {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  margin: -6px 0;
+}
+.mono-flag--css {
+  border-radius: 50%;
+  background: var(--seat);
+  box-shadow: inset 0 0 0 3px var(--foreground);
+}
+.mono.is-static .mono-band {
+  animation: none;
+}
+@keyframes mono-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+/* ── 판 그림 받는 중(로비를 거치지 않고 들어왔을 때) ── */
+.board-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 150000;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(var(--background-sky-top), var(--background-sky-mid) 55%, var(--background-sky-bottom));
+}
+.board-loading-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-8);
+  border: 4px solid var(--tile-side-dark);
+  border-radius: var(--radius-card);
+  background: var(--wood-light);
+  box-shadow: 0 6px 0 color-mix(in srgb, var(--foreground) 25%, transparent);
+  color: var(--background-cloud);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  text-shadow: -1px -1px 0 var(--tile-side-dark), 1px -1px 0 var(--tile-side-dark), -1px 1px 0 var(--tile-side-dark), 1px 2px 0 var(--tile-side-dark);
+}
+.board-loading-dot {
+  width: 22px;
+  height: 22px;
+  border: 4px solid var(--gold-shine);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: board-spin 0.9s linear infinite;
+}
+@keyframes board-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 세로 화면: 가로로 돌려 달라는 안내(가로 전용 게임, U1 DESIGN §4.2 세로 화면 안내) ──
+   QA6: 게임 루트(.game)의 fixed 최상위 덮개. 전용 z 는 기존 최고(연결 끊김 띠 60) 위 */
+:root {
+  --z-rotate: 100;
+  /* U4 카드 회전(DESIGN §4.2 2026-10-29 U4, motion.rotate-card.*): 주기 4.8s = 세로 머묾 1.2 + 돌기 .8 + 가로 머묾 2.0 + 되돌기 .8 */
+  --rotate-card-period: 4800ms;
+  --rotate-card-ease: cubic-bezier(0.65, 0, 0.35, 1);
+}
+.board-rotate {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-rotate);
+  overflow: hidden;
+  background: linear-gradient(var(--background-sky-top), var(--background-sky-mid));
+  /* P 카드 폭 W(3:4) · L 카드 폭 WL(16:9). DESIGN: W = min(78vw, 420px, 39vh), WL = min(86vw, 4W/3).
+     60vw 상한(U4 구현 보정): 돌기 도중 P 대각선(5W/3 × scale ≈ .97)이 좁은 폰(360·390 폭)에서도 화면 폭 안에 머물게 */
+  --rot-w: min(60vw, 420px, 39dvh);
+  --rot-h: calc(var(--rot-w) * 4 / 3);
+  --rot-wl: min(86vw, var(--rot-w) * 4 / 3);
+  --rot-hl: calc(var(--rot-wl) * 9 / 16);
+  --rot-cy: 42dvh; /* 회전 중심: 가로 중앙 × 42vh(세로 중앙보다 8% 위) */
+}
+.board-rotate-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.85;
+  pointer-events: none;
+}
+.board-rotate-body {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* 카드: 금테·그림자는 정적, 움직이는 건 transform·opacity 만 */
+.board-rotate-card {
+  position: absolute;
+  left: calc(50% - var(--rot-w) / 2);
+  top: calc(var(--rot-cy) - var(--rot-h) / 2);
+  width: var(--rot-w);
+  height: var(--rot-h);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 3px solid var(--gold-rim);
+  border-radius: var(--radius-card);
+  background: var(--background-sky-mid);
+  box-shadow: var(--shadow-popover);
+  transform-origin: 50% 50%;
+}
+.board-rotate-card.is-l {
+  left: calc(50% - var(--rot-wl) / 2);
+  top: calc(var(--rot-cy) - var(--rot-hl) / 2);
+  width: var(--rot-wl);
+  height: var(--rot-hl);
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.94);
+}
+.board-rotate-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 10%; /* 세로판 9:16 → 3:4: 위 하늘·풍차 섬은 남기고 아래 구름을 자른다 */
+}
+.board-rotate[data-mode='turn'] .board-rotate-card {
+  will-change: transform;
+}
+.board-rotate[data-mode='turn'] .is-p {
+  animation: rotate-card-p-turn var(--rotate-card-period) linear infinite, rotate-card-p-fade var(--rotate-card-period) linear infinite;
+}
+.board-rotate[data-mode='turn'] .is-l {
+  animation: rotate-card-l-turn var(--rotate-card-period) linear infinite, rotate-card-l-fade var(--rotate-card-period) linear infinite;
+}
+/* 0~25% 세로 머묾 → 25~41.667% 돌기(시계방향, 그림 속 금 화살표 방향) → ~83.333% 가로 머묾 → ~100% 되돌기(거울) */
+@keyframes rotate-card-p-turn {
+  0%, 25% { transform: rotate(0deg) scale(1); animation-timing-function: var(--rotate-card-ease); }
+  41.667%, 83.333% { transform: rotate(90deg) scale(0.94); animation-timing-function: var(--rotate-card-ease); }
+  100% { transform: rotate(0deg) scale(1); }
+}
+@keyframes rotate-card-l-turn {
+  0%, 25% { transform: rotate(-90deg) scale(0.94); animation-timing-function: var(--rotate-card-ease); }
+  41.667%, 83.333% { transform: rotate(0deg) scale(1); animation-timing-function: var(--rotate-card-ease); }
+  100% { transform: rotate(-90deg) scale(0.94); }
+}
+/* 크로스페이드는 돌기 구간의 35~65% 에서만: 25 + 16.667 × .35 = 30.833, × .65 = 35.833 (되돌기 89.167 ~ 94.167) */
+@keyframes rotate-card-p-fade {
+  0%, 30.833% { opacity: 1; }
+  35.833%, 89.167% { opacity: 0; }
+  94.167%, 100% { opacity: 1; }
+}
+@keyframes rotate-card-l-fade {
+  0%, 30.833% { opacity: 0; }
+  35.833%, 89.167% { opacity: 1; }
+  94.167%, 100% { opacity: 0; }
+}
+/* 가로판을 못 받았을 때만: P 카드 옛 ±3° 흔들림(U1) */
+.board-rotate[data-mode='sway'] .is-p {
+  transform-origin: 50% 85%;
+  animation: board-rotate-sway 2.4s ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes board-rotate-sway {
+  from { transform: rotate(-3deg); }
+  to { transform: rotate(3deg); }
+}
+/* 알약: 카드 상태와 무관하게 아래 가운데 고정 */
+.board-rotate-pill {
+  position: fixed;
+  left: 50%;
+  bottom: max(6vh, 16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(92vw, 460px);
+  padding: var(--space-3) var(--space-6);
+  border: 3px solid var(--gold-rim);
+  border-radius: var(--radius-full);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-popover);
+  text-align: center;
+}
+.board-rotate-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+}
+.board-rotate-icon::after {
+  /* 도는 방향을 보여 주는 3/4 원 */
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 5px solid var(--primary-edge);
+  border-left-color: transparent;
+  border-radius: var(--radius-full);
+}
+.board-rotate-device {
+  width: 40px;
+  height: 64px;
+  border: 5px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--background-cloud);
+  animation: board-rotate 2.4s var(--ease-standard) infinite;
+}
+@keyframes board-rotate {
+  0%, 25% { transform: rotate(0); }
+  60%, 100% { transform: rotate(-90deg); }
+}
+.board-rotate-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.25;
+  word-break: keep-all;
+}
+.board-rotate-text {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-body);
+  word-break: keep-all;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dice.is-ready[data-phase='idle'] .dice-cup--stand, .dice-cup--stand { animation: none !important; }
+  .dice-sum-n, .dice-burst, .dice-double, .dice-spark i, .dice-double-spark i, .dice-die.is-land .dice-face { animation: none !important; }
+  .dice-spark, .dice-double-spark { display: none; }
+  .plaza-mask { transition: none; }
+  .own-flagset, .own-bld { animation: none; }
+  .mono-band { animation: none; }
+  .board-rotate-device { animation: none; transform: rotate(-90deg); }
+  .board-rotate-card { animation: none !important; will-change: auto; }
+  .board-loading-dot { animation: none; }
+}
+
+/* ── 코인 연출(2026-10-28 사용자 요청): 롤링 숫자 · 증감 팝 · 코인 흐름. transform·opacity 만 움직인다 ── */
+.panel-coin-ico {
+  display: inline-flex;
+  flex: none;
+}
+.panel-coin-ico.is-shake {
+  animation: coin-shake 420ms ease-out;
+}
+@keyframes coin-shake {
+  0%, 100% { transform: translateX(0) rotate(0); }
+  20% { transform: translateX(-2px) rotate(-12deg); }
+  40% { transform: translateX(2px) rotate(10deg); }
+  60% { transform: translateX(-1.5px) rotate(-7deg); }
+  80% { transform: translateX(1px) rotate(4deg); }
+}
+
+/* 숫자: 글자마다 고정 폭 칸(릴). 바뀐 자리만 0~9 띠가 돌다 선다 */
+.coin-num {
+  --reel-h: 1.12em;
+  display: inline-flex;
+  height: var(--reel-h);
+  line-height: var(--reel-h);
+  transition: color var(--duration-base) linear;
+}
+.coin-num.is-gain { color: var(--gold-shine); }
+.coin-num.is-loss { color: color-mix(in srgb, var(--destructive) 45%, var(--background-cloud)); }
+.reel {
+  position: relative;
+  display: inline-block;
+  width: 0.56em;
+  height: var(--reel-h);
+  text-align: center;
+}
+.reel--comma { width: 0.26em; }
+.reel-strip { display: block; }
+.reel-cell {
+  display: block;
+  height: var(--reel-h);
+}
+.reel.is-spin {
+  /* 위아래만 자르고 옆 외곽선은 살린다 */
+  clip-path: inset(-1px -0.25em);
+}
+.reel.is-spin .reel-strip {
+  will-change: transform;
+  animation: reel-up var(--dur) cubic-bezier(0.18, 0.72, 0.24, 1.06) both;
+}
+.reel.is-spin.is-down .reel-strip { animation-name: reel-down; }
+.reel.is-exit { animation: reel-fade-out var(--dur, 700ms) ease-in both; }
+.reel.is-enter { animation: reel-fade-in 500ms ease-out both; }
+@keyframes reel-up {
+  from { transform: translateY(0); }
+  to { transform: translateY(calc(var(--n) * var(--reel-h) * -1)); }
+}
+@keyframes reel-down {
+  from { transform: translateY(calc(var(--n) * var(--reel-h) * -1)); }
+  to { transform: translateY(0); }
+}
+@keyframes reel-fade-out { 60% { opacity: 1; } to { opacity: 0; } }
+@keyframes reel-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* 증감 팝: 알약 위 가운데. 이유(작은 흰 글씨) 오른쪽에 큰 숫자. 여러 개면 줄(lane)마다 위로 쌓인다 */
+.coin-pops {
+  position: absolute;
+  left: 30%;
+  right: 0;
+  bottom: calc(100% - 6px);
+  height: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.coin-pop {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--lane, 0) * 34px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.coin-pop-in {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 1px 12px 3px;
+  border: 2px solid var(--foreground);
+  border-radius: var(--radius-full);
+  background: linear-gradient(color-mix(in srgb, var(--foreground) 62%, transparent), color-mix(in srgb, var(--foreground) 80%, transparent));
+  box-shadow: 0 3px 0 color-mix(in srgb, var(--foreground) 35%, transparent);
+  font-family: var(--font-display);
+  transform-origin: 50% 100%;
+  animation: coin-pop 1500ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+.coin-pop.is-gain .coin-pop-in { border-color: var(--gold-rim-dark); }
+.coin-pop.is-loss .coin-pop-in { border-color: var(--destructive); }
+.coin-pop-why {
+  color: var(--background-cloud);
+  font-size: 15px;
+  line-height: 1.2;
+  text-shadow: 0 1px 0 var(--foreground);
+}
+.coin-pop-num {
+  font-size: 25px;
+  font-weight: var(--weight-regular);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  text-shadow: -1.5px -1.5px 0 var(--foreground), 1.5px -1.5px 0 var(--foreground), -1.5px 1.5px 0 var(--foreground), 1.5px 2.5px 0 var(--foreground);
+}
+.coin-pop.is-gain .coin-pop-num { color: var(--gold-shine); }
+.coin-pop.is-loss .coin-pop-num { color: #FF6B5E; }
+@keyframes coin-pop {
+  0% { opacity: 0; transform: translateY(14px) scale(0.5); }
+  14% { opacity: 1; transform: translateY(-6px) scale(1.14); }
+  24% { transform: translateY(0) scale(1); }
+  78% { opacity: 1; transform: translateY(-6px) scale(1); }
+  100% { opacity: 0; transform: translateY(-20px) scale(0.96); }
+}
+.coin-pop.is-still .coin-pop-in { animation: coin-pop-still 1000ms linear both; }
+@keyframes coin-pop-still {
+  0% { opacity: 0; }
+  10%, 80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 코인 흐름 층(HUD 스테이지 좌표, 패널 위) */
+.coin-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+.coin-fx-img {
+  display: block;
+  width: 26px;
+  height: 26px;
+  filter: drop-shadow(0 2px 0 color-mix(in srgb, var(--foreground) 55%, transparent));
+}
+.coin-fx-fallback {
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, var(--gold-shine), var(--coin) 55%, var(--coin-edge));
+}
+.coin-fly,
+.coin-drain,
+.coin-drop {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  will-change: transform, opacity;
+}
+/* 자리 → 자리: 바깥은 곧게(dx, dy), 안쪽은 포물선(arc), 맨 안은 동전 뒤집기 */
+.coin-fly { animation: coin-fly var(--dur) cubic-bezier(0.45, 0.05, 0.55, 0.95) var(--delay) both; }
+.coin-fly-arc { display: block; animation: coin-arc var(--dur) linear var(--delay) both; }
+.coin-fly-spin { display: block; animation: coin-spin 320ms linear infinite; }
+@keyframes coin-fly {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.6); }
+  12% { opacity: 1; transform: translate(calc(var(--dx) * 0.04), calc(var(--dy) * 0.04)) scale(1.1); }
+  88% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.75); }
+}
+@keyframes coin-arc {
+  0% { transform: translateY(0); animation-timing-function: cubic-bezier(0.3, 0.6, 0.6, 1); }
+  50% { transform: translateY(calc(var(--arc) * -1)); animation-timing-function: cubic-bezier(0.4, 0, 0.7, 0.4); }
+  100% { transform: translateY(0); }
+}
+@keyframes coin-spin {
+  0%, 100% { transform: scaleX(1); }
+  50% { transform: scaleX(0.15); }
+}
+/* 은행에 냄: 아이콘에서 튀어 올랐다 아래로 떨어지며 사라진다 */
+.coin-drain { animation: coin-drain var(--dur) cubic-bezier(0.5, 0, 0.9, 0.6) var(--delay) both; }
+@keyframes coin-drain {
+  0% { opacity: 0; transform: translate(0, 0) scale(0.7); }
+  15% { opacity: 1; transform: translate(calc(var(--sx) * 0.6), -16px) scale(1); }
+  100% { opacity: 0; transform: translate(calc(var(--sx) * 2.4), 62px) scale(0.8) rotate(40deg); }
+}
+/* 은행에서 받음: 위에서 떨어져 아이콘 속으로 */
+.coin-drop { animation: coin-drop var(--dur) cubic-bezier(0.55, 0, 0.85, 0.45) var(--delay) both; }
+@keyframes coin-drop {
+  0% { opacity: 0; transform: translate(calc(var(--sx) * 2), -78px) scale(1); }
+  20% { opacity: 1; }
+  85% { opacity: 1; transform: translate(0, 0) scale(0.9); }
+  100% { opacity: 0; transform: translate(0, 2px) scale(0.5); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reel.is-spin .reel-strip,
+  .reel.is-exit,
+  .reel.is-enter,
+  .panel-coin-ico.is-shake { animation: none; }
+  .coin-fx { display: none; }
+}
