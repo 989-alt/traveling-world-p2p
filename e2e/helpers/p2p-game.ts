@@ -157,3 +157,29 @@ export const pm = (page: Page, kind: string) => page.locator(`.pm[data-kind="${k
 export const sec = async (page: Page) => Number(await page.locator('.qs .tm').getAttribute('data-sec'));
 /** 이 기기의 tw.host.<코드>.* 키 */
 export const hostKeys = (page: Page, code: string) => page.evaluate((p) => Object.keys(localStorage).filter((k) => k.startsWith(p)).sort(), `tw.host.${code}.`);
+
+// ── 거울(IndexedDB) ─────────────────────────────────────
+// 앱과 같은 판(tw·kv)을 시험이 직접 연다. 앱이 한 번도 안 열린 출처에서도 안 터지게 스토어를 만든다
+
+/** 이 기기의 거울 전체 */
+export const mirror = (page: Page) => page.evaluate(() => new Promise<Record<string, string>>((ok, no) => {
+  const req = indexedDB.open('tw', 1);
+  req.onupgradeneeded = () => { req.result.createObjectStore('kv'); };
+  req.onerror = () => no(req.error);
+  req.onsuccess = () => {
+    const s = req.result.transaction('kv').objectStore('kv');
+    const k = s.getAllKeys(), v = s.getAll();
+    s.transaction.oncomplete = () => { req.result.close(); ok(Object.fromEntries(k.result.map((x, i) => [x, v.result[i]]))); };
+  };
+}));
+/** 거울에서 한 키를 지운다 */
+export const mirrorDelete = (page: Page, key: string) => page.evaluate((key) => new Promise<void>((ok, no) => {
+  const req = indexedDB.open('tw', 1);
+  req.onupgradeneeded = () => { req.result.createObjectStore('kv'); };
+  req.onerror = () => no(req.error);
+  req.onsuccess = () => {
+    const tx = req.result.transaction('kv', 'readwrite');
+    tx.objectStore('kv').delete(key);
+    tx.oncomplete = () => { req.result.close(); ok(); };
+  };
+}), key);

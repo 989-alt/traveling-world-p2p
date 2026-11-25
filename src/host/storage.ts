@@ -1,5 +1,6 @@
 // 방장 기기 저장(PRD §9.5): localStorage 바로 쓰기 + 메모리 사본. Room 은 사본만 읽는다 — 쓰기가 막혀도 판은 돈다.
 import type { RoomCtx, RoomRec } from '../../worker/room';
+import { mirrorMust, mirrorPut } from './mirror';
 
 export type StorageLike = Pick<Storage, 'length' | 'key' | 'getItem' | 'setItem' | 'removeItem'>;
 /** ok 저장 중 · never 처음부터 저장 못 함(복원 없음) · stopped 도중에 멈춤(마지막 온전한 저장본이 남아 있다) */
@@ -19,7 +20,7 @@ export function browserStore(): StorageLike | null {
 const read = (store: StorageLike | null, code: string, key: string) => store?.getItem(hostKey(code, key)) ?? null;
 
 /** 지우면서 훑지 않도록 키를 먼저 모은다 */
-const keysOf = (store: StorageLike | null) => (store ? Array.from({ length: store.length }, (_, i) => store.key(i) ?? '') : []);
+export const keysOf = (store: StorageLike | null) => (store ? Array.from({ length: store.length }, (_, i) => store.key(i) ?? '') : []);
 
 function roomCodes(store: StorageLike | null): string[] {
   try { return keysOf(store).flatMap((k) => ROOM_KEY.exec(k)?.[1] ?? []); } catch { return []; }
@@ -46,7 +47,7 @@ export const aliveFresh = (store: StorageLike | null, code: string) => Math.abs(
 
 export function deleteRoom(store: StorageLike | null, code: string) {
   const prefix = hostKey(code, '');
-  try { for (const k of keysOf(store)) if (k.startsWith(prefix)) store!.removeItem(k); } catch { /* 저장이 막힌 기기: 지울 것도 없다 */ }
+  try { for (const k of keysOf(store)) if (k.startsWith(prefix)) store!.removeItem(k); mirrorMust(prefix, null); } catch { /* 저장이 막힌 기기: 지울 것도 없다 */ }
 }
 
 /** 이 방을 열 수 없다(만료·깨짐) */
@@ -66,6 +67,27 @@ function chunkLength(json: string): number {
   return v.length;
 }
 
+/** 저장본 읽기. 못 읽거나 로그가 온전하지 않으면(로그는 평가 증거다) 던진다. stale = 빼고 지울 조각 */
+export function scanRoom(store: StorageLike | null, code: string) {
+  const rec = readRec(store, code);
+  const prefix = hostKey(code, '');
+  const kept = new Map<string, string>();
+  const stale: string[] = [];
+  let events = 0;
+  for (const full of keysOf(store)) {
+    if (!full.startsWith(prefix)) continue;
+    const key = full.slice(prefix.length);
+    // room 쓰기에서 저장이 멈추면 번호 logChunks 이상 조각이 남는다. Room.load 는 조각을 전부 읽으므로 빼고 지운다(PRD §9.5 쓰기 실패)
+    if (key.startsWith('log:') && Number(key.slice(4)) >= (rec?.logChunks ?? 0)) { stale.push(key); continue; }
+    const v = read(store, code, key);
+    if (v === null || key === 'alive') continue;
+    if (key.startsWith('log:')) events += chunkLength(v);
+    kept.set(key, v);
+  }
+  if (events !== (rec?.logLen ?? 0)) throw new Error('로그가 빠짐');
+  return { rec, kept, stale };
+}
+
 export class HostStorage {
   status: SaveStatus = 'ok';
   private mem = new Map<string, string>();
@@ -75,25 +97,17 @@ export class HostStorage {
 
   constructor(private store: StorageLike | null, private code: string) {}
 
-  /** 저장된 방을 메모리 사본으로. 못 읽거나 로그가 온전하지 않으면(로그는 평가 증거다) 아무것도 쓰거나 지우지 않고 던진다 */
+  /** 저장된 방을 메모리 사본으로 */
   load() {
-    const rec = readRec(this.store, this.code);
+    const { rec, kept, stale } = scanRoom(this.store, this.code);
+    const alive = read(this.store, this.code, 'alive');
     this.saved = rec !== null;
-    const prefix = hostKey(this.code, '');
-    const stale: string[] = [];
-    let events = 0;
-    for (const full of keysOf(this.store)) {
-      if (!full.startsWith(prefix)) continue;
-      const key = full.slice(prefix.length);
-      // room 쓰기에서 저장이 멈추면 번호 logChunks 이상 조각이 남는다. Room.load 는 조각을 전부 읽으므로 빼고 지운다(PRD §9.5 쓰기 실패)
-      if (key.startsWith('log:') && Number(key.slice(4)) >= (rec?.logChunks ?? 0)) { stale.push(key); continue; }
-      const v = read(this.store, this.code, key);
-      if (v === null || key === 'alive') continue;
-      if (key.startsWith('log:')) events += chunkLength(v);
-      this.mem.set(key, v);
-    }
-    if (events !== (rec?.logLen ?? 0)) throw new Error('로그가 빠짐');
+    this.mem = kept;
     for (const key of stale) this.remove(key);
+    // 거울 없이 이어 온 방이면 앞 조각이 거울에 없다 → 열 때 한 번 통째로 맞춘다
+    mirrorPut(hostKey(this.code, ''), null);
+    for (const [key, value] of kept) mirrorPut(hostKey(this.code, key), value);
+    if (alive !== null) mirrorPut(hostKey(this.code, 'alive'), alive);
   }
 
   kv: RoomCtx['storage']['kv'] = {
@@ -116,11 +130,14 @@ export class HostStorage {
   /** 예외를 Room 으로 넘기지 않는다. 한 번 실패하면 이 방 키에 더 쓰지 않는다(마지막 온전한 저장본을 남긴다) */
   private write(key: string, value: string) {
     if (this.status !== 'ok') return;
-    if (!this.trySet(hostKey(this.code, key), value)) {
+    if (this.trySet(hostKey(this.code, key), value)) {
+      if (key === 'room') this.saved = true;
+      mirrorPut(hostKey(this.code, key), value);
+    } else {
       this.status = this.saved ? 'stopped' : 'never';
       // Room 처리 도중이므로 듣는 쪽은 처리가 끝난 뒤에 부른다
       for (const f of this.listeners) queueMicrotask(() => f(this.status));
-    } else if (key === 'room') this.saved = true;
+    }
   }
 
   private trySet(full: string, value: string): boolean {
@@ -142,6 +159,6 @@ export class HostStorage {
   }
 
   private remove(key: string) {
-    try { this.store?.removeItem(hostKey(this.code, key)); } catch { /* 저장이 막힌 기기 */ }
+    try { this.store?.removeItem(hostKey(this.code, key)); mirrorPut(hostKey(this.code, key), null); } catch { /* 저장이 막힌 기기 */ }
   }
 }

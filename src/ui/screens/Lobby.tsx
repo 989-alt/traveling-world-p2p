@@ -64,9 +64,11 @@ export function Lobby({ client, s }: { client: GameClient; s: ClientState }) {
         {coded ? <CodePill code={room.code} /> : <NoCode failed={s.host!.net !== 'wait'} onAgain={() => client.retryHost()} />}
         <p class="lobby-sub">{room.settings.totalMinutes}분 놀이{coded && ' · 친구에게 코드를 알려 주세요'}</p>
         {/* 고르는 중에는 캐릭터 줄까지 높이가 꽉 차 있다(1366×768) → 앉은 뒤부터 */}
-        {s.host && s.seat !== null && (s.host.save === 'ok'
-          ? <p class="lobby-sub" data-k="host-keep">이 기기가 방을 지켜요. 놀이가 끝날 때까지 이 창을 닫거나 다른 앱으로 가지 마세요</p>
-          : <p class="lobby-sub" role="status" data-save={s.host.save}>{SAVE_TEXT[s.host.save]}</p>)}
+        {s.host && s.seat !== null && (s.host.save !== 'ok'
+          ? <p class="lobby-sub" role="status" data-save={s.host.save}>{SAVE_TEXT[s.host.save]}</p>
+          : s.host.restored
+            ? <p class="lobby-sub" data-k="host-restored">다시 연 방이에요. 친구들이 모두 자리에 앉은 뒤에 출발해 주세요</p>
+            : <p class="lobby-sub" data-k="host-keep">이 기기가 방을 지켜요. 놀이가 끝날 때까지 이 창을 닫거나 다른 앱으로 가지 마세요</p>)}
         <section class="sc-glass lobby-seats" aria-label="자리">
           {seats.map((v) => (
             <div key={v.seat} class={`lb-slot${v.seat === s.seat ? ' is-me' : ''}`} data-seat={v.seat} style={{ '--seat': `var(--seat-${v.seat + 1})` }}>

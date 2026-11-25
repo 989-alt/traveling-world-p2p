@@ -57,15 +57,22 @@ describe('P2E12 설정', () => {
     expect((await load()).NET).toEqual({
       helloMs: 5_000, inlineChars: 3_000, chunkChars: 4_000, maxChunks: 2_048, maxChars: 4_194_304, maxDropped: 64, assembleMs: 15_000,
       beatMs: 2_000, silentMs: 6_000, deadMs: 10_000, closeWaitMs: 3_000, maxRemotes: 6, maxPending: 24, maxBuffered: 2_048, seatlessMs: 120_000, floodCount: 40, floodMs: 2_000,
-      openMs: 20_000, registerMs: 15_000, maxRepicks: 5, retakeMs: 2_000, retakeGiveUpMs: 100_000, reopenGapMs: 10_000, reconnectMs: 1_000, reconnectMaxMs: 30_000,
+      openMs: 20_000, registerMs: 15_000, maxRepicks: 5, retakeMs: 2_000, retakeGiveUpMs: 150_000, reopenGapMs: 10_000, reconnectMs: 1_000, reconnectMaxMs: 30_000,
     });
   });
 
-  it('P2bE10 새 숫자 셋과 100초도 VITE_TW_* 로 덮인다', async () => {
+  it('P2bE10 새 숫자 셋과 150초도 VITE_TW_* 로 덮인다', async () => {
     vi.stubEnv('VITE_TW_RETAKE_GIVE_UP_MS', '1');
     vi.stubEnv('VITE_TW_MAX_PENDING', '2');
     vi.stubEnv('VITE_TW_MAX_BUFFERED', '3');
     vi.stubEnv('VITE_TW_MAX_DROPPED', '4');
     expect((await load()).NET).toMatchObject({ retakeGiveUpMs: 1, maxPending: 2, maxBuffered: 3, maxDropped: 4 });
+  });
+
+  it('P7E17 다시 열기 포기는 기본 150초, VITE_TW_RETAKE_GIVE_UP_MS 로 덮인다', async () => {
+    expect((await load()).NET.retakeGiveUpMs).toBe(150_000);
+    vi.resetModules();
+    vi.stubEnv('VITE_TW_RETAKE_GIVE_UP_MS', '7');
+    expect((await load()).NET.retakeGiveUpMs).toBe(7);
   });
 });

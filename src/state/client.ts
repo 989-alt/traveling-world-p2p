@@ -1,13 +1,14 @@
 // 화면 ↔ 서버 사이 하나뿐인 연결 관리자. 상태는 reduce() 로만 바뀌고, 자리 정보는 기기에 저장해 끊겨도 돌아온다.
 import { useEffect, useState } from 'preact/hooks';
-import { browserStore, hasRoom } from '../host/storage';
+import { adoptRooms, openMirror, type MirrorBackend } from '../host/mirror';
+import { browserStore, hasRoom, sweepRooms } from '../host/storage';
 import { NET, TRANSPORT } from '../net/config';
 import { peerMake } from '../net/peer-socket';
 import { RoomSocket, type RoomSocketOpts } from '../net/socket';
 import { ENDED_CLOSE, PIN_TRY_MS, type ClientAct, type ClientMsg, type ServerMsg } from '../shared/protocol';
 import type { Seat, TotalMinutes } from '../shared/types';
 import type { HostNet } from './host-net';
-import { loadSeat, saveSeat, type SavedSeat } from './seat-store';
+import { adoptSeat, loadSeat, saveSeat, SEAT_KEY, type SavedSeat } from './seat-store';
 import { hostCover, initialState, reduce, type ClientState, type HostView } from './store';
 
 type Make = RoomSocketOpts['make'];
@@ -24,6 +25,8 @@ export class GameClient {
   private listeners = new Set<(s: ClientState) => void>();
   private rejoin: { seat: Seat; pin: string } | null = null;
   private hello: number | null = null;
+  /** 이 방에서 골라 앉은 캐릭터(hello 로): 되돌아간 대기실에서 저절로 다시 앉는다(PRD §9.5) */
+  private myChar: number | null = null;
   /** 자동 복귀(이 기기에 저장된 자리)로 들어왔는지 — PIN 이 틀리면('pin') 저장을 지운다 */
   private fromSaved = false;
   /** 'locked' 뒤 같은 PIN 을 다시 보낼 타이머 */
@@ -48,6 +51,17 @@ export class GameClient {
 
   subscribe(f: (s: ClientState) => void) { this.listeners.add(f); return () => { this.listeners.delete(f); }; }
   private set(s: ClientState) { this.state = s; this.listeners.forEach((f) => f(s)); }
+
+  /** 앱을 열 때(PRD §9.5): 거울에서 되찾기 → 14일 지난 방 청소 → 자동 복귀. 거울을 읽는 사이 사용자가 방에 들어갔으면 그대로 둔다 */
+  async boot(mirror?: () => MirrorBackend) {
+    const all = await openMirror(mirror);
+    if (all) {
+      await adoptRooms(all);
+      adoptSeat(all.get(SEAT_KEY));
+    }
+    sweepRooms();
+    if (!this.state.code) this.resumeSaved();
+  }
 
   /** 이 기기에 남은 자리가 있으면 그 방으로 바로 돌아간다 */
   resumeSaved(): boolean {
@@ -212,6 +226,7 @@ export class GameClient {
   home() {
     this.close();
     this.rejoin = null;
+    this.myChar = null;
     this.set(initialState());
   }
 
@@ -250,6 +265,7 @@ export class GameClient {
     saveSeat(null);
     this.rejoin = null;
     this.hello = null;
+    this.myChar = null;
     this.fromSaved = false;
     this.ending = false;
     this.set({ ...initialState(), bye });
@@ -280,15 +296,20 @@ export class GameClient {
       if (s.host && s.room!.phase === 'playing') s = { ...s, host: { ...s.host, played: true } };
     }
     if (m.t === 'welcome') {
+      if (!this.rejoin) this.myChar = this.hello ?? this.myChar; // 자리 번호로 앉은 것은 고른 것이 아니다
       this.rejoin = { seat: m.seat, pin: m.pin };
       this.hello = null;
       this.fromSaved = false;
       saveSeat({ roomCode: this.host?.room.code ?? s.code!, seatNo: m.seat, seatPin: m.pin } satisfies SavedSeat);
     }
+    let again = false;
     if (m.t === 'error' && m.code === 'pin') {
       // 틀린 PIN: 다시 이을 때 또 보내지 않는다. 저장된 자리였으면 지우고 PIN 입력 화면으로
       // 앉아 있던 자리가 되돌아간 판(저장이 멈춘 방장)에 없을 때도 같다
       if (this.fromSaved || s.seat !== null) saveSeat(null);
+      // 되돌아간 대기실(PRD §9.5 P2P-7): 내 캐릭터와 빈자리가 있으면 저절로 다시 앉는다
+      again = s.seat !== null && this.myChar !== null && s.room?.phase === 'lobby'
+        && s.room.seats.some((x) => !x.taken) && !s.room.seats.some((x) => x.taken && x.charId === this.myChar);
       s = { ...s, seat: null, pin: null, pins: null };
       this.rejoin = null;
       this.fromSaved = false;
@@ -300,6 +321,8 @@ export class GameClient {
     }
     this.set(s);
     if (m.t === 'welcome') this.host?.start();
+    // 한 번만: this.hello 에 두지 않아 다시 붙을 때 또 보내지 않고, 오류를 걷지 않아 기다리는 동안에도 손으로 고를 수 있다
+    if (again) this.sock?.send({ t: 'hello', charId: this.myChar! });
     if (s.needSync) this.send({ t: 'sync' });
   }
 

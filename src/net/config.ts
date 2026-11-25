@@ -55,8 +55,8 @@ export const NET = {
   registerMs: num('REGISTER_MS', 15_000),
   maxRepicks: num('MAX_REPICKS', 5),
   retakeMs: num('RETAKE_MS', 2_000),
-  /** 시그널링 서버가 옛 등록을 쥐는 90초(peer 1.0.2 alive_timeout)보다 길게 */
-  retakeGiveUpMs: num('RETAKE_GIVE_UP_MS', 100_000),
+  /** 공용 시그널링 서버가 멎은 방장의 옛 등록을 쥐는 시간(2026-11-25 실측 93.7~99.0초)보다 넉넉히 */
+  retakeGiveUpMs: num('RETAKE_GIVE_UP_MS', 150_000),
   /** 판을 이어 간 뒤(끝난 판 포함) 연결 ID 를 끝내 못 잡았을 때 뒤에서 다시 등록하기까지(§8-19 ⓖ) */
   reopenGapMs: num('REOPEN_GAP_MS', 10_000),
   reconnectMs: num('RECONNECT_MS', 1_000),

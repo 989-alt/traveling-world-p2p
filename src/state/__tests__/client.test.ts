@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EXPIRE_MS } from '../../../worker/room';
+import { FakeLocks, FakeMirror, FakeStore, flush } from '../../host/__tests__/helpers';
+import { openMirror, type MirrorBackend } from '../../host/mirror';
+import { hostKey } from '../../host/storage';
 import type { SocketLike } from '../../net/socket';
 import { PIN_TRY_MS } from '../../shared/protocol';
 import { GameClient } from '../client';
@@ -55,6 +59,7 @@ describe('GameClient 저장된 자리', () => {
     sock.msg({ t: 'error', code: 'pin' });
     expect(c.state.error).toBe('pin');
     expect(loadSeat()).toBeNull();
+    expect(sock.sent).toHaveLength(1); // P2P-7: 앉은 적 없는 기기는 저절로 다시 앉지 않는다
   });
 });
 
@@ -171,6 +176,7 @@ describe('P3E17 새 연결의 첫 state 는 전체여야 한다(되돌아간 판
     expect(c.state.log).toEqual(host);
     expect(Math.max(...fresh)).toBe(0);
     expect([c.state.seat, c.state.pin, c.state.pins, c.state.error, loadSeat()]).toEqual([null, null, null, 'pin', null]);
+    expect(sock.sent.filter((m) => (m as { t: string }).t === 'hello')).toEqual([]); // P2P-7: 판 중
     sock.onclose?.({});
     expect(c.state.conn).toBe('retrying');
   });
@@ -391,5 +397,257 @@ describe('P3bE09 닫힘 코드의 화면(§9.5)', () => {
     expect([c.state.code, c.state.bye, c.state.host, loadSeat(), closes]).toEqual([null, null, null, null, 1]);
     vi.advanceTimersByTime(60_000);
     expect([closes, vi.getTimerCount()]).toEqual([1, 0]);
+  });
+});
+
+describe('P7E09 앱을 여는 순서(boot)', () => {
+  afterEach(async () => { await openMirror(() => { throw new Error('끔'); }); });
+  const seat = { roomCode: 'ABCDEF', seatNo: 2 as const, seatPin: '0420' };
+  /** 만료된 방 하나와 저장 자리 2 가 있는 기기. 거울은 시험이 답한다 */
+  function rigBoot() {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const store = new FakeStore();
+    vi.stubGlobal('localStorage', store);
+    vi.stubGlobal('navigator', { locks: new FakeLocks() });
+    saveSeat(seat);
+    const old = hostKey('BBBBBB', 'room');
+    store.data.set(old, JSON.stringify({ expiresAt: 1 }));
+    const socks: FakeSock[] = [];
+    const opened: string[] = [];
+    const c = new GameClient(() => { const s = new FakeSock(); socks.push(s); return s; }, undefined,
+      async () => ({ createHost: async () => null, openHost: async (code: string) => { opened.push(code); return 'busy' as const; } }));
+    const swept: boolean[] = [];
+    const resume = c.resumeSaved.bind(c);
+    c.resumeSaved = () => { swept.push(!store.data.has(old)); return resume(); };
+    let answer: (v: Map<string, string>) => void = () => {};
+    const mirror: MirrorBackend = { all: () => new Promise((ok) => { answer = ok; }), write: async () => {} };
+    const p = c.boot(() => mirror);
+    return { c, store, socks, opened, swept, old, p, answer: async (v = new Map<string, string>()) => { answer(v); await p; } };
+  }
+
+  it('P7E09 읽는 동안 사용자가 코드를 넣음: 자동 복귀를 건너뛰고 청소는 한다', async () => {
+    const r = rigBoot();
+    expect([r.c.state.code, r.store.data.has(r.old)]).toEqual([null, true]);
+    r.c.open('GGGGGG');
+    const { state } = r.c;
+    await r.answer(new Map([['tw.seat', JSON.stringify({ ...seat, at: Date.now() + 1 })]]));
+    expect([r.c.state === state, r.c.state.code, r.socks.length, r.swept, r.store.data.has(r.old)]).toEqual([true, 'GGGGGG', 1, [], false]);
+    r.c.close();
+  });
+
+  it('P7E09 읽는 동안 사용자가 방을 만듦: 만든 방 그대로', async () => {
+    const r = rigBoot();
+    const sock = new FakeSock();
+    const net = { restored: false, stalled: false, room: { code: 'HHHHHH', hostRejoin: () => null, loopback: () => sock }, bind() {}, start() {}, close() {} };
+    (r.c as unknown as { loadHost: unknown }).loadHost = async () => ({ createHost: async () => net });
+    expect(await r.c.create({ totalMinutes: 40 })).toBe(true);
+    await r.answer();
+    expect([r.c.state.code, r.c.state.host !== null, r.swept]).toEqual(['HHHHHH', true, []]);
+    r.c.close();
+  });
+
+  it('P7E09 읽기가 시한을 넘김: 2초에 청소 → 자동 복귀', async () => {
+    const r = rigBoot();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect([r.c.state.code, r.store.data.has(r.old)]).toEqual([null, true]);
+    await vi.advanceTimersByTimeAsync(1);
+    await r.p;
+    expect([r.c.state.code, r.socks.length, r.swept]).toEqual(['ABCDEF', 1, [true]]);
+    r.c.close();
+  });
+
+  it('P7E09 거울이 없어도 청소 → 자동 복귀', async () => {
+    const r = rigBoot();
+    await r.answer();
+    expect([r.c.state.code, r.swept]).toEqual(['ABCDEF', [true]]);
+    r.c.close();
+    const c = new GameClient(() => new FakeSock());
+    await c.boot(); // node 에는 indexedDB 가 없다
+    expect(c.state.code).toBe('ABCDEF');
+    c.close();
+  });
+
+  it('P7E09 거울의 방·자리가 먼저 들어와 방장으로 저절로 돌아온다', async () => {
+    const r = rigBoot();
+    const room = JSON.stringify({ code: 'KKKKKK', expiresAt: Date.now() + EXPIRE_MS, logChunks: 0, logLen: 0 });
+    await r.answer(new Map([
+      [hostKey('KKKKKK', 'room'), room], [hostKey('KKKKKK', 'alive'), '5'],
+      ['tw.seat', JSON.stringify({ roomCode: 'KKKKKK', seatNo: 0, seatPin: '1234', at: Date.now() + 1 })],
+    ]));
+    await flush();
+    expect([r.c.state.code, r.store.data.get(hostKey('KKKKKK', 'room')), r.opened, r.swept]).toEqual(['KKKKKK', room, ['KKKKKK'], [true]]);
+    expect(loadSeat()).toEqual({ roomCode: 'KKKKKK', seatNo: 0, seatPin: '1234' });
+    r.c.close();
+  });
+});
+
+describe('P7E10 되돌아간 대기실의 학생', () => {
+  const seatsOf = (chars: (number | null)[]) => chars.map((c) => ({ taken: c !== null, charId: c ?? 0 }));
+  const st = (chars: (number | null)[], phase = 'lobby') => ({ t: 'state', code: 'ABCDEF', phase, settings: { totalMinutes: 40, touristQuiz: false }, hostSeat: 0, seats: seatsOf(chars), game: null, deadlineAt: null, stepAt: 0, now: 0, cards: [], notice: null, cutscene: null, logFrom: 0, log: [] });
+  /** 코드로 들어와 캐릭터 3 으로 자리 1 에 앉은 학생 */
+  function sat(Client = GameClient) {
+    vi.useFakeTimers();
+    const m = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) });
+    const socks: FakeSock[] = [];
+    const c = new Client(() => { const s = new FakeSock(); socks.push(s); return s; }, () => 'ws://x');
+    const join = () => {
+      c.open('ABCDEF');
+      const s = socks.at(-1)!;
+      s.onopen?.({});
+      s.msg(st([0, null, null, null]));
+      c.join(3);
+      s.msg({ t: 'welcome', seat: 1, pin: '0420' });
+      s.msg(st([0, 3, null, null]));
+    };
+    /** 끊겼다 다시 붙음: 방이 chars·phase 로 보인다 */
+    const again = (chars: (number | null)[], phase = 'lobby') => {
+      socks.at(-1)!.onclose?.({});
+      vi.advanceTimersByTime(10_000);
+      const s = socks.at(-1)!;
+      s.onopen?.({});
+      s.msg(st(chars, phase));
+      return s;
+    };
+    const back = (chars: (number | null)[], phase = 'lobby') => { const s = again(chars, phase); s.msg({ t: 'error', code: 'pin' }); return s; };
+    return { c, socks, join, again, back };
+  }
+  const hellos = (s: FakeSock) => s.sent.filter((x) => (x as { t: string }).t === 'hello');
+  const HELLO = { t: 'hello', charId: 3 };
+  const REJOIN = { t: 'rejoin', seat: 1, pin: '0420' };
+
+  it('P7E10 같은 캐릭터로 hello 한 번. 그 전에 자리·저장 자리를 비우고, 받아 주면 새 번호로 앉는다. 또 되돌아가면 또 한 번', () => {
+    const r = sat();
+    r.join();
+    const seen: unknown[] = [];
+    r.c.subscribe((s) => seen.push([s.seat, loadSeat()]));
+    const s = r.back([0, null, null, null]);
+    expect(s.sent).toEqual([REJOIN, HELLO]);
+    expect(seen.at(-1)).toEqual([null, null]);
+    s.msg({ t: 'welcome', seat: 1, pin: '7777' });
+    s.msg(st([0, 3, null, null]));
+    expect([r.c.state.seat, r.c.state.pin, r.c.state.error, loadSeat()]).toEqual([1, '7777', null, { roomCode: 'ABCDEF', seatNo: 1, seatPin: '7777' }]);
+    const t = r.back([0, null, null, null]);
+    expect(t.sent).toEqual([{ ...REJOIN, pin: '7777' }, HELLO]);
+    r.c.close();
+  });
+
+  const none: [string, (number | null)[], string][] = [
+    ['캐릭터를 남이 씀', [3, null, null, null], 'lobby'],
+    ['빈자리 없음', [0, 1, 2, 4], 'lobby'],
+    ['하는 중', [0, null, null, null], 'playing'],
+    ['멈춤', [0, null, null, null], 'paused'],
+  ];
+  for (const [name, chars, phase] of none) it(`P7E10 ${name}: hello 0`, () => {
+    const r = sat();
+    r.join();
+    const s = r.back(chars, phase);
+    expect([s.sent, r.c.state.seat, r.c.state.error, loadSeat()]).toEqual([[REJOIN], null, 'pin', null]);
+    r.c.close();
+  });
+
+  it('P7E10 저장 자리로만 들어온 기기: hello 0', () => {
+    const r = sat();
+    saveSeat({ roomCode: 'ABCDEF', seatNo: 1, seatPin: '0420' });
+    r.c.resumeSaved();
+    r.socks[0].onopen?.({});
+    r.socks[0].msg({ t: 'welcome', seat: 1, pin: '0420' });
+    r.socks[0].msg(st([0, 3, null, null]));
+    expect(r.c.state.seat).toBe(1);
+    expect(r.back([0, null, null, null]).sent).toEqual([REJOIN]);
+    r.c.close();
+  });
+
+  it('P7E10 캐릭터를 골랐지만 못 앉고 자리 번호로 앉은 기기(rejoin 의 welcome): 그 캐릭터를 기억하지 않는다', () => {
+    const r = sat();
+    r.c.open('ABCDEF');
+    const s = r.socks[0];
+    s.onopen?.({});
+    s.msg(st([0, 1, null, null]));
+    r.c.join(3);
+    s.msg({ t: 'error', code: 'started' });
+    r.c.claim(1, '0420');
+    s.msg({ t: 'welcome', seat: 1, pin: '0420' });
+    expect(hellos(r.back([0, null, null, null]))).toEqual([]);
+    r.c.close();
+  });
+
+  it('P7E10 앉은 뒤 rejoin 으로 받은 welcome 은 기억을 지우지 않는다', () => {
+    const r = sat();
+    r.join();
+    const s = r.again([0, 3, null, null]);
+    s.msg({ t: 'welcome', seat: 1, pin: '0420' });
+    expect(r.back([0, null, null, null]).sent).toEqual([REJOIN, HELLO]);
+    r.c.close();
+  });
+
+  for (const code of ['full', 'started', null] as const) it(`P7E10 보낸 hello 가 ${code ?? '답이 없음'}: 다시 붙어도 두 번째 hello 0, 고르기 단추는 살아 있다`, () => {
+    const r = sat();
+    r.join();
+    const s = r.back([0, null, null, null]);
+    if (code) s.msg({ t: 'error', code });
+    vi.advanceTimersByTime(60_000);
+    s.msg({ t: 'error', code: 'pin' });
+    expect(hellos(s)).toEqual([HELLO]);
+    expect(r.c.state.error).not.toBeNull(); // Lobby: 고른 적 있는 기기의 단추는 error 가 있어야 눌린다
+    const t = r.back([0, null, null, null]);
+    expect(t.sent).toEqual([]);
+    expect(r.c.state.error).not.toBeNull();
+    r.c.join(4); // 손으로는 다시 고를 수 있다
+    expect(hellos(t)).toEqual([{ t: 'hello', charId: 4 }]);
+    r.c.close();
+  });
+
+  for (const [name, go] of [['home', (c) => c.home()], ['leave', (c) => c.leave()], ['finish', (c) => c.leaveGame()]] as [string, (c: GameClient) => void][]) it(`P7E10 ${name} 뒤 새 방에서는 기억 0`, () => {
+    const r = sat();
+    r.join();
+    go(r.c);
+    saveSeat({ roomCode: 'ABCDEF', seatNo: 1, seatPin: '0420' });
+    r.c.open('ABCDEF');
+    const s = r.socks.at(-1)!;
+    s.onopen?.({});
+    s.msg({ t: 'welcome', seat: 1, pin: '0420' });
+    s.msg(st([0, 3, null, null]));
+    expect(hellos(r.back([0, null, null, null]))).toEqual([]);
+    r.c.close();
+  });
+
+  it('P7E10 대기실에서 끊긴 사이 시작된 판(증분 state 만 옴): 옛 대기실을 보고 hello 를 보내지 않는다', () => {
+    const r = sat();
+    r.join();
+    r.socks[0].onclose?.({});
+    vi.advanceTimersByTime(10_000);
+    const s = r.socks.at(-1)!;
+    s.onopen?.({});
+    s.msg({ ...st([0, null, null, null], 'playing'), logFrom: 5 });
+    s.msg({ t: 'error', code: 'pin' });
+    expect(hellos(s)).toEqual([]);
+    r.c.close();
+  });
+
+  it('P7E10 ws 빌드도 같다', async () => {
+    vi.resetModules();
+    vi.stubEnv('VITE_TW_NET', 'ws');
+    vi.stubGlobal('location', { protocol: 'http:', host: 'x' });
+    const ws = await import('../client');
+    await import('../../net/ws');
+    const r = sat(ws.GameClient as unknown as typeof GameClient);
+    r.c.open('ABCDEF');
+    await vi.advanceTimersByTimeAsync(0);
+    const s0 = r.socks[0];
+    s0.onopen?.({});
+    s0.msg(st([0, null, null, null]));
+    r.c.join(3);
+    s0.msg({ t: 'welcome', seat: 1, pin: '0420' });
+    s0.onclose?.({});
+    await vi.advanceTimersByTimeAsync(10_000);
+    const s = r.socks.at(-1)!;
+    s.onopen?.({});
+    s.msg(st([0, null, null, null]));
+    s.msg({ t: 'error', code: 'pin' });
+    expect(s.sent).toEqual([REJOIN, HELLO]);
+    r.c.close();
+    vi.unstubAllEnvs();
+    vi.resetModules();
   });
 });

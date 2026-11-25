@@ -6,6 +6,7 @@ import { seedCrypto, SETTINGS, T0 } from '../../../worker/__tests__/fakes';
 import { withDice } from '../../engine/__tests__/helpers';
 import type { SocketLike } from '../../net/socket';
 import { createHostRoom, openHostRoom, type HostConn, type HostDeps, type HostRoom } from '../host-room';
+import type { MirrorBackend, MirrorOp } from '../mirror';
 import { hostKey } from '../storage';
 
 export const quotaError = () => Object.assign(new Error('full'), { name: 'QuotaExceededError' });
@@ -30,6 +31,7 @@ export class FakeStore {
     this.data.set(k, v);
   }
   removeItem(k: string) { this.ops.push(`del ${k}`); this.data.delete(k); }
+  of(code: string) { return Object.fromEntries([...this.data].filter(([k]) => k.startsWith(hostKey(code, ''))).sort()); }
   keys(code: string) { return [...this.data.keys()].filter((k) => k.startsWith(hostKey(code, ''))).sort(); }
   chars() { return [...this.data].reduce((n, [a, b]) => n + a.length + b.length, 0); }
   /** 이 방 키에 쓰거나 지운 횟수 */
@@ -44,6 +46,33 @@ export class FakeLocks {
     this.held.add(name);
     try { return await cb({ name }); } finally { this.held.delete(name); }
   }
+}
+
+/** 놓은 뒤 한 박자 늦게 풀리는 잠금(진짜 Web Locks 의 놓기는 비동기다) */
+export class SlowLocks extends FakeLocks {
+  override async request(name: string, _o: { ifAvailable: boolean }, cb: (lock: unknown) => unknown) {
+    if (this.held.has(name)) return cb(null);
+    this.held.add(name);
+    try { return await cb({ name }); } finally { await new Promise((ok) => { setTimeout(ok, 50); }); this.held.delete(name); }
+  }
+}
+
+/** 메모리 거울. 브라우저가 죽어도 남는 것 = data */
+export class FakeMirror implements MirrorBackend {
+  data = new Map<string, string>();
+  /** 트랜잭션 하나씩, 보낸 순서대로 */
+  batches: MirrorOp[][] = [];
+  fail: Error | null = null;
+  async all() { return new Map(this.data); }
+  async write(ops: MirrorOp[]) {
+    if (this.fail) throw this.fail;
+    this.batches.push(ops);
+    for (const [k, v] of ops) {
+      if (v !== null) this.data.set(k, v);
+      else for (const x of [...this.data.keys()]) if (x.startsWith(k)) this.data.delete(x);
+    }
+  }
+  of(code: string) { return Object.fromEntries([...this.data].filter(([k]) => k.startsWith(hostKey(code, ''))).sort()); }
 }
 
 export const fakeDeps = (store = new FakeStore(), locks: FakeLocks | null = new FakeLocks()) => ({ store, locks });

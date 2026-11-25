@@ -317,18 +317,18 @@ describe('P2E09 연결 ID 를 남이 쓰는 중', () => {
     await flush();
     expect(q.states).toEqual(['failed']);
   });
-  it('P2E09 복원: 같은 ID 로 2초마다, 100초 넘으면 실패', async () => {
+  it('P2E09 복원: 같은 ID 로 2초마다, 150초 넘으면 실패', async () => {
     const r = rig();
-    for (let i = 1; i <= 50; i++) {
+    for (let i = 1; i <= 75; i++) {
       last(fake.peers).fail('unavailable-id');
       await tick(1_999);
       expect(fake.peers.length).toBe(i);
       await tick(1);
       expect([fake.peers.length, last(fake.peers).id, r.states]).toEqual([i + 1, 'twj1-ABCDEF', []]);
     }
-    last(fake.peers).fail('unavailable-id'); // 100초
+    last(fake.peers).fail('unavailable-id'); // 150초
     await tick(60_000);
-    expect([r.states, fake.peers.length, fake.peers.every((p) => p.destroyed), vi.getTimerCount()]).toEqual([['failed'], 51, true, 0]);
+    expect([r.states, fake.peers.length, fake.peers.every((p) => p.destroyed), vi.getTimerCount()]).toEqual([['failed'], 76, true, 0]);
   });
   it('P2E09 복원: 그 사이 성공하면 열림', async () => {
     const r = rig();
@@ -482,9 +482,9 @@ const firstMsg = (dc: FakeDc, n: number): string => {
 const alive = () => fake.peers.filter((p) => !p.destroyed).length;
 
 describe('P2bE03 복원: 이미 쓰는 중', () => {
-  it('P2bE03 2초 간격 같은 ID, 99초까지 failed 0, 100초에 failed 1번, 살아 있는 Peer ≤ 1', async () => {
+  it('P2bE03 2초 간격 같은 ID, 149초까지 failed 0, 150초에 failed 1번, 살아 있는 Peer ≤ 1', async () => {
     const r = rig();
-    for (let t = 0; t <= 98; t += 2) {
+    for (let t = 0; t <= 148; t += 2) {
       last(fake.peers).fail('unavailable-id');
       expect(alive()).toBe(0);
       await tick(1_000);
@@ -498,7 +498,7 @@ describe('P2bE03 복원: 이미 쓰는 중', () => {
     expect([r.states, fake.peers.length, vi.getTimerCount()]).toEqual([['failed'], n, 0]);
   });
 
-  it('P2bE03 만든 지 200초 뒤 처음 나오면 그때부터 100초', async () => {
+  it('P2bE03 만든 지 200초 뒤 처음 나오면 그때부터 150초', async () => {
     const r = rig();
     const t0 = Date.now();
     while (Date.now() - t0 < 200_000) { last(fake.peers).fail('network'); while (!alive()) await tick(500); await tick(5_000); }
@@ -509,15 +509,15 @@ describe('P2bE03 복원: 이미 쓰는 중', () => {
       await tick(2_000);
       expect(alive()).toBe(1);
     }
-    expect([Date.now() - t1, r.states]).toEqual([100_000, ['offline', 'failed']]);
+    expect([Date.now() - t1, r.states]).toEqual([150_000, ['offline', 'failed']]);
   });
 
-  it('P2bE03 50초 이어지다 다른 오류가 끼면 100초를 다시 잰다', async () => {
+  it('P2bE03 50초 이어지다 다른 오류가 끼면 150초를 다시 잰다', async () => {
     const r = rig();
     for (let i = 0; i < 25; i++) { last(fake.peers).fail('unavailable-id'); await tick(2_000); }
     last(fake.peers).fail('network');
     await tick(1_000);
-    for (let i = 0; i < 50; i++) { last(fake.peers).fail('unavailable-id'); expect(r.states).toEqual(['offline']); await tick(2_000); }
+    for (let i = 0; i < 75; i++) { last(fake.peers).fail('unavailable-id'); expect(r.states).toEqual(['offline']); await tick(2_000); }
     last(fake.peers).fail('unavailable-id');
     expect([r.states, vi.getTimerCount()]).toEqual([['offline', 'failed'], 0]);
   });

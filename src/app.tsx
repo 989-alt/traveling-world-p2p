@@ -6,7 +6,6 @@ import { armOnFirstGesture, audio } from './audio/engine';
 import { FullscreenButton } from './ui/device/FullscreenButton';
 import { armFullscreenOnFirstGesture } from './ui/device/fullscreen';
 import { holdWakeLock } from './ui/device/wake-lock';
-import { sweepRooms } from './host/storage';
 import { TRANSPORT } from './net/config';
 import { GameClient, useClient } from './state/client';
 import { hostCover } from './state/store';
@@ -25,8 +24,7 @@ export function App() {
   useEffect(() => {
     armOnFirstGesture(); // T11: 첫 터치에서 소리 잠금 풀기
     armFullscreenOnFirstGesture(); // U7: 첫 탭에서 전체 화면(휴대폰 상단바 숨김) · 가로 고정. 거부되면 그냥 진행
-    sweepRooms(); // 14일 지난 방 청소(PRD §9.5). 자동 복귀보다 먼저
-    client.resumeSaved();
+    void client.boot();
     const vis = () => { if (!document.hidden) client.resync(); };
     document.addEventListener('visibilitychange', vis);
     return () => document.removeEventListener('visibilitychange', vis);

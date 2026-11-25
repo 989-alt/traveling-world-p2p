@@ -2,7 +2,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { joinCode } from './helpers/entry';
 import { serveApp, startSignaling } from './helpers/p2p';
-import { arrive, atQuestion, closeAll, device, finishGame, hostKeys, hurry, look, makeRoom, passTurn, pick, pm, readCode, sec, seen, shot, sit, startGame, tab, tall, type Dev } from './helpers/p2p-game';
+import { arrive, atQuestion, closeAll, device, finishGame, hostKeys, hurry, look, makeRoom, mirrorDelete, passTurn, pick, pm, readCode, sec, seen, shot, sit, startGame, tab, tall, type Dev } from './helpers/p2p-game';
 
 test.describe.configure({ mode: 'serial' });
 test.skip(() => test.info().project.name === 'tablet-touch', '기기 크기와 무관 — 데스크톱 한 번');
@@ -326,7 +326,7 @@ test('P5E02 다시 열지 못한 방(failed): 방 코드가 보이고, 처음 �
   const note = host.page.locator('.sc-note');
   await expect(note).toHaveText('방을 다시 여는 중이에요…', { timeout: 15_000 });
   await host.page.waitForTimeout(2_500); // '이미 쓰는 중'이 한 번은 나온 뒤
-  await host.page.evaluate(() => { (window as unknown as { __skip: number }).__skip = 100_000; });
+  await host.page.evaluate(() => { (window as unknown as { __skip: number }).__skip = 150_000; });
   await stuckWithCode(host, code, 'failed');
   const keys = await hostKeys(host.page, code);
   const gone = new Promise((ok) => { squat.onclose = ok; });
@@ -509,6 +509,7 @@ test('P3E21 만료된 방이 저장소에 있는 채 앱을 엶: 그 방 키 0�
     localStorage.removeItem('tw.seat');
     return Object.keys(localStorage).filter((k) => k.startsWith(`tw.host.${c}.`)).sort();
   }, code);
+  await mirrorDelete(host.page, 'tw.seat'); // 안 지우면 앱이 거울에서 자리를 되찾는다
   await host.page.goto(site.url);
   await expect(host.page.locator('[data-act="intro-start"]')).toBeVisible();
   expect(await hostKeys(host.page, 'AAAAAA')).toEqual([]);
